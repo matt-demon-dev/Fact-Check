@@ -10,7 +10,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 
 # Load environment
-dotenv_path = load_dotenv()
+load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # Config file
@@ -33,7 +33,8 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 
 # Sync slash commands on ready
 def setup_hook():
-    bot.loop.create_task(bot.tree.sync())
+    bot.tree.copy_global_to(guild=None)
+    return bot.tree.sync()
 bot.setup_hook = setup_hook
 
 # Utility to save config
@@ -81,13 +82,19 @@ def schedule_task():
     post_fact_daily.start()
 
 @tasks.loop(time=time(0, 0))  # placeholder, updated by schedule_task
-def post_fact_daily():
+async def post_fact_daily():
     channel = bot.get_channel(config["channel_id"])
     if channel is None:
-        return
+        try:
+            channel = await bot.fetch_channel(config["channel_id"])
+        except:
+            return
     fact = fetch_fact()
-    bot.loop.create_task(channel.send(f"📌 **Fact of the Day:**\n{fact}"))
-    print(f"✅ Posted at {datetime.utcnow()} UTC")
+    try:
+        await channel.send(f"📌 **Fact of the Day:**\n{fact}")
+        print(f"✅ Posted at {datetime.utcnow()} UTC")
+    except Exception as e:
+        print(f"❌ Send error: {e}")
 
 @bot.event
 async def on_ready():
