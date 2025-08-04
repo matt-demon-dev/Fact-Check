@@ -31,11 +31,13 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# Sync slash commands on ready
-def setup_hook():
-    bot.tree.copy_global_to(guild=None)
-    return bot.tree.sync()
-bot.setup_hook = setup_hook
+# Sync global slash commands on ready\@bot.event
+async def on_connect():
+    try:
+        await bot.tree.sync()
+        print("🔄 Slash commands synced globally.")
+    except Exception as e:
+        print(f"❌ Slash sync failed: {e}")
 
 # Utility to save config
 def save_config():
