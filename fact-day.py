@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from datetime import datetime, time
 import pytz
 import discord
-from discord.ext import commands, tasks
+from discord.ext import tasks
 
 # Load environment
 load_dotenv()
@@ -28,8 +28,9 @@ else:
 # Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = discord.Bot(intents=intents)
 
+# Utility to save config
 def save_config():
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f)
@@ -70,14 +71,12 @@ async def on_ready():
             f"{config['hour']:02}:{config['minute']:02} {config['timezone']}"
         )
     else:
-        print("⚠️ No channel set. Use !setchannel and !settime to configure.")
+        print("⚠️ No channel set. Use /setchannel and /settime to configure.")
 
 # Schedule or reschedule the daily task
 def schedule_task():
-    # Stop existing loop if running
     if post_fact_daily.is_running():
         post_fact_daily.stop()
-    # Compute next run time in UTC
     tz = pytz.timezone(config["timezone"])
     now = datetime.now(tz)
     run_dt = now.replace(
@@ -87,7 +86,7 @@ def schedule_task():
     post_fact_daily.change_interval(time=utc_time)
     post_fact_daily.start()
 
-@tasks.loop(time=time(0, 0))  # placeholder, will be updated by schedule_task
+@tasks.loop(time=time(0, 0))  # placeholder, updated by schedule_task
 async def post_fact_daily():
     channel = bot.get_channel(config["channel_id"])
     if channel is None:
@@ -103,51 +102,59 @@ async def post_fact_daily():
     except Exception as e:
         print(f"❌ Send error: {e}")
 
-# Commands
-@bot.command(name="fact")
-async def fact_cmd(ctx):
-    await ctx.send(f"📌 **Random Fact:**\n{fetch_fact()}")
+# Slash command: Get an instant fact\@bot.slash_command(name="fact", description="Get a random fact instantly")
+async def fact(ctx: discord.ApplicationContext):
+    await ctx.respond(f"📌 **Random Fact:**\n{fetch_fact()}")
 
-@bot.command(name="setchannel")
-@commands.has_permissions(administrator=True)
-async def setchannel(ctx):
+# Slash command: Set the daily fact channel (Admin only)
+@bot.slash_command(name="setchannel", description="Set current channel for daily facts")
+async def setchannel(ctx: discord.ApplicationContext):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.respond("❌ You need Administrator permissions.", ephemeral=True)
+        return
     config["channel_id"] = ctx.channel.id
     save_config()
-    await ctx.send("✅ This channel is set for daily facts.")
     schedule_task()
+    await ctx.respond(f"✅ This channel ({ctx.channel.mention}) is set for daily facts.")
 
-@bot.command(name="settime")
-@commands.has_permissions(administrator=True)
-async def settime(ctx, hhmm: str, tz: str):
+# Slash command: Set time and timezone (Admin only)
+@bot.slash_command(name="settime", description="Set post time and timezone. Format HH:MM Timezone")
+async def settime(ctx: discord.ApplicationContext, hhmm: str, timezone: str):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.respond("❌ You need Administrator permissions.", ephemeral=True)
+        return
     try:
         hour, minute = map(int, hhmm.split(':'))
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             raise ValueError("Hour or minute out of range.")
-        # Validate timezone
-        pytz.timezone(tz)
-        config.update({"hour": hour, "minute": minute, "timezone": tz})
+        pytz.timezone(timezone)
+        config.update({"hour": hour, "minute": minute, "timezone": timezone})
         save_config()
         schedule_task()
-        await ctx.send(f"✅ Time updated to {hour:02}:{minute:02} {tz}")
+        await ctx.respond(f"✅ Time updated to {hour:02}:{minute:02} {timezone}")
     except Exception as e:
-        await ctx.send(
-            "❌ Invalid format or timezone.\nExample: `!settime 15:30 America/New_York`\n"
-            f"Error: {e}"
+        await ctx.respond(
+            "❌ Invalid format or timezone.\nExample: `/settime 15:30 America/New_York`\n"
+            f"Error: {e}", ephemeral=True
         )
 
-@bot.command(name="status")
-async def status(ctx):
+# Slash command: Show current settings
+@bot.slash_command(name="status", description="Show current channel and post time")
+async def status(ctx: discord.ApplicationContext):
     ch = f"<#{config['channel_id']}>" if config['channel_id'] else "Not set"
-    await ctx.send(
-        f"📢 Channel: {ch}\n🕒 Time: {config['hour']:02}:{config['minute']:02} {config['timezone']}"
+    await ctx.respond(
+        f"📢 Channel: {ch}\n🕒 Time: {config['hour']:02}:{config['minute']:02} {config['timezone']}",
+        ephemeral=True
     )
 
-@bot.command(name="timezones")
-async def timezones(ctx):
+# Slash command: List example timezones
+@bot.slash_command(name="timezones", description="Show example valid timezones")
+async def timezones(ctx: discord.ApplicationContext):
     examples = ["UTC", "America/New_York", "Europe/London", "Asia/Tokyo", "Australia/Sydney"]
-    await ctx.send(
+    await ctx.respond(
         "✅ Example Timezones:\n" + "\n".join(examples) +
-        "\nFull list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones"
+        "\nFull list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones",
+        ephemeral=True
     )
 
 bot.run(TOKEN)
