@@ -8,24 +8,25 @@ import pytz
 import discord
 from discord.ext import commands, tasks
 
-# Load .env
+# Load environment
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Config persistence
+# Config file
 CONFIG_FILE = "config.json"
 DEFAULT_CONFIG = {"channel_id": 0, "hour": 12, "minute": 0, "timezone": "UTC"}
 
-# Load or create config
+# Load or initialize config
 if os.path.exists(CONFIG_FILE):
     with open(CONFIG_FILE, "r") as f:
         config = json.load(f)
 else:
-    config = DEFAULT_CONFIG
+    config = DEFAULT_CONFIG.copy()
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f)
 
 # Bot setup
+token = TOKEN
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -34,26 +35,30 @@ def save_config():
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f)
 
-# ✅ Fetch fact (API first, Google fallback)
+# Fetch fact (API first, fallback to scraping)
 def fetch_fact() -> str:
     try:
-        api_res = requests.get("https://uselessfacts.jsph.pl/random.json?language=en", timeout=10)
-        api_res.raise_for_status()
-        return api_res.json().get("text", "Couldn't fetch a fact today.")
+        res = requests.get(
+            "https://uselessfacts.jsph.pl/random.json?language=en", timeout=10
+        )
+        res.raise_for_status()
+        return res.json().get("text", "Couldn't fetch a fact today.")
     except Exception as e:
-        print(f"⚠️ API failed: {e}")
-
+        print(f"⚠️ API error: {e}")
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get("https://www.google.com/search?q=random+fact", headers=headers, timeout=10)
+        res = requests.get(
+            "https://www.google.com/search?q=random+fact",
+            headers=headers,
+            timeout=10
+        )
         res.raise_for_status()
         soup = BeautifulSoup(res.text, "html.parser")
-        fact_div = soup.find("div", class_="BNeawe s3v9rd AP7Wnd")
-        if fact_div:
-            return fact_div.get_text(strip=True)
+        div = soup.find("div", class_="BNeawe s3v9rd AP7Wnd")
+        if div:
+            return div.get_text(strip=True)
     except Exception as e:
-        print(f"⚠️ Google scraping failed: {e}")
-
+        print(f"⚠️ Scrape error: {e}")
     return "Couldn't fetch a fact today."
 
 @bot.event
@@ -61,84 +66,89 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     if config["channel_id"]:
         schedule_task()
-        print(f"📢 Daily facts will post in channel ID {config['channel_id']} at {config['hour']:02}:{config['minute']:02} {config['timezone']}")
+        print(
+            f"📢 Posting daily facts to channel {config['channel_id']} "
+            f"at {config['hour']:02}:{config['minute']:02} {config['timezone']}"
+        )
     else:
         print("⚠️ No channel set. Use !setchannel and !settime to configure.")
 
-# ✅ Cancel old loop and reschedule with new time
+# Schedule or reschedule the daily task
 def schedule_task():
+    # cancel if running
     if post_fact_daily.is_running():
-        post_fact_daily.cancel()  # Stop old loop before starting new one
+        post_fact_daily.cancel()
+    # compute next UTC time
     tz = pytz.timezone(config["timezone"])
-    local_time = tz.localize(datetime.now().replace(hour=config["hour"], minute=config["minute"], second=0, microsecond=0))
-    utc_time = local_time.astimezone(pytz.UTC).time()
+    now = datetime.now(tz)
+    run_dt = now.replace(
+        hour=config["hour"], minute=config["minute"], second=0, microsecond=0
+    )
+    # if the scheduled time is in the past today, let tasks.loop handle next day
+    utc_time = run_dt.astimezone(pytz.UTC).time()
     post_fact_daily.change_interval(time=utc_time)
     post_fact_daily.start()
 
-@tasks.loop(time=time(12, 0))  # Placeholder; gets updated by schedule_task()
+@tasks.loop(time=time(0, 0))  # placeholder, updated on_ready
 async def post_fact_daily():
     channel = bot.get_channel(config["channel_id"])
     if channel is None:
         try:
             channel = await bot.fetch_channel(config["channel_id"])
-        except:
-            print("❌ Could not find channel.")
+        except Exception:
+            print("❌ Channel fetch failed.")
             return
     fact = fetch_fact()
     try:
         await channel.send(f"📌 **Fact of the Day:**\n{fact}")
-        print(f"✅ Fact posted at {datetime.utcnow()} UTC")
+        print(f"✅ Posted at {datetime.utcnow()} UTC")
     except Exception as e:
-        print(f"❌ Failed to send message: {e}")
+        print(f"❌ Send error: {e}")
 
-# ✅ Command: Get an instant fact
-@bot.command()
-async def fact(ctx):
+# Commands
+@bot.command(name="fact")
+async def fact_cmd(ctx):
     await ctx.send(f"📌 **Random Fact:**\n{fetch_fact()}")
 
-# ✅ Command: Set the current channel for daily posts (Admin only)
-@bot.command()
+@bot.command(name="setchannel")
 @commands.has_permissions(administrator=True)
 async def setchannel(ctx):
     config["channel_id"] = ctx.channel.id
     save_config()
-    await ctx.send("✅ This channel is now set for daily facts!")
-    if not post_fact_daily.is_running():
-        schedule_task()
+    await ctx.send("✅ This channel is set for daily facts.")
+    schedule_task()
 
-# ✅ Command: Set posting time and timezone (Admin only)
-@bot.command()
+@bot.command(name="settime")
 @commands.has_permissions(administrator=True)
 async def settime(ctx, hhmm: str, tz: str):
     try:
-        hour, minute = map(int, hhmm.split(":"))
+        hour, minute = map(int, hhmm.split(':'))
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
-            raise ValueError("Invalid time format.")
-        pytz.timezone(tz)  # Validate timezone
-        config["hour"], config["minute"], config["timezone"] = hour, minute, tz
+            raise ValueError("Hour or minute out of range.")
+        pytz.timezone(tz)  # validate
+        config.update({"hour": hour, "minute": minute, "timezone": tz})
         save_config()
         schedule_task()
-        await ctx.send(f"✅ Daily post time updated to {hour:02}:{minute:02} {tz}")
+        await ctx.send(f"✅ Time updated to {hour:02}:{minute:02} {tz}")
     except Exception as e:
-        await ctx.send(f"❌ Invalid format or timezone.\nExample: `!settime 15:30 America/New_York`\nError: {e}")
+        await ctx.send(
+            "❌ Invalid format or timezone.\nExample: `!settime 15:30 America/New_York`\n"
+            f"Error: {e}"
+        )
 
-# ✅ Command: Show current settings
-@bot.command()
+@bot.command(name="status")
 async def status(ctx):
-    tz = config["timezone"]
-    channel_info = f"<#{config['channel_id']}>" if config['channel_id'] else "Not set"
-    await ctx.send(f"📢 Channel: {channel_info}\n🕒 Time: {config['hour']:02}:{config['minute']:02} {tz}")
+    ch = f"<#{config['channel_id']}>" if config['channel_id'] else "Not set"
+    await ctx.send(
+        f"📢 Channel: {ch}\n🕒 Time: {config['hour']:02}:{config['minute']:02} {config['timezone']}"
+    )
 
-# ✅ Command: Show example timezones
-@bot.command()
+@bot.command(name="timezones")
 async def timezones(ctx):
-    examples = [
-        "UTC",
-        "America/New_York",
-        "Europe/London",
-        "Asia/Tokyo",
-        "Australia/Sydney"
-    ]
-    await ctx.send("✅ Example Timezones:\n" + "\n".join(examples) + "\nFull list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones")
+    examples = ["UTC", "America/New_York", "Europe/London", "Asia/Tokyo", "Australia/Sydney"]
+    await ctx.send(
+        "✅ Example Timezones:\n" + "\n".join(examples) +
+        "\nFull list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones"
+    )
 
 bot.run(TOKEN)
