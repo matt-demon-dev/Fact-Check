@@ -26,7 +26,6 @@ else:
         json.dump(config, f)
 
 # Bot setup
-token = TOKEN
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -67,29 +66,28 @@ async def on_ready():
     if config["channel_id"]:
         schedule_task()
         print(
-            f"📢 Posting daily facts to channel {config['channel_id']} "
-            f"at {config['hour']:02}:{config['minute']:02} {config['timezone']}"
+            f"📢 Posting daily facts to channel {config['channel_id']} at "
+            f"{config['hour']:02}:{config['minute']:02} {config['timezone']}"
         )
     else:
         print("⚠️ No channel set. Use !setchannel and !settime to configure.")
 
 # Schedule or reschedule the daily task
 def schedule_task():
-    # cancel if running
+    # Stop existing loop if running
     if post_fact_daily.is_running():
-        post_fact_daily.cancel()
-    # compute next UTC time
+        post_fact_daily.stop()
+    # Compute next run time in UTC
     tz = pytz.timezone(config["timezone"])
     now = datetime.now(tz)
     run_dt = now.replace(
         hour=config["hour"], minute=config["minute"], second=0, microsecond=0
     )
-    # if the scheduled time is in the past today, let tasks.loop handle next day
     utc_time = run_dt.astimezone(pytz.UTC).time()
     post_fact_daily.change_interval(time=utc_time)
     post_fact_daily.start()
 
-@tasks.loop(time=time(0, 0))  # placeholder, updated on_ready
+@tasks.loop(time=time(0, 0))  # placeholder, will be updated by schedule_task
 async def post_fact_daily():
     channel = bot.get_channel(config["channel_id"])
     if channel is None:
@@ -125,7 +123,8 @@ async def settime(ctx, hhmm: str, tz: str):
         hour, minute = map(int, hhmm.split(':'))
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
             raise ValueError("Hour or minute out of range.")
-        pytz.timezone(tz)  # validate
+        # Validate timezone
+        pytz.timezone(tz)
         config.update({"hour": hour, "minute": minute, "timezone": tz})
         save_config()
         schedule_task()
